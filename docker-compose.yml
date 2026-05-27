@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  streamlit-model:
+    build: .
+    container_name: my-pytorch-app
+    ports:
+      - "8501:8501"
+
+    volumes:
+      - ./app.py:/app/app.py
+      - ./model.py:/app/model.py
+    restart: unless-stopped
