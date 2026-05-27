@@ -23,7 +23,9 @@ Upload a photo of a leaf and the model will predict which class it belongs to, s
 - **Docker / Docker Compose** — packaging and deployment
 
 ---
-
+## - [See the architecture](https://netron.app/)
+-Upload `.onnx` saved model on the site 
+---
 ## 📁 Project Structure
 
 ```
