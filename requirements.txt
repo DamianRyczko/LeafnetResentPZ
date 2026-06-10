@@ -12,3 +12,7 @@ plotly==6.5.1
 scikit-learn==1.8.0
 scipy==1.16.3
 opencv-python-headless==4.13.0.92
+pytest
+pytest-mock
+sqlalchemy
+extra-streamlit-components
