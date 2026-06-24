@@ -7,52 +7,6 @@ import pandas as pd
 import re
 from PIL import Image
 from model import residual_cnn, transforms_val
-import numpy as np
-import torch.nn.functional as F
-import matplotlib.cm as cm
-import os
-import time
-import uuid
-from streamlit.connections import SQLConnection
-import extra_streamlit_components as stx
-from sqlalchemy import text
-
-#GRAD-CAM
-class GradCAM:
-    def __init__(self, model, target_layer):
-        self.model = model
-        self.activations = None
-        self.gradients = None
-        self._h1 = target_layer.register_forward_hook(self._save_act)
-        self._h2 = target_layer.register_full_backward_hook(self._save_grad)
-
-    def _save_act(self, _m, _i, out):
-        self.activations = out.detach()
-
-    def _save_grad(self, _m, _gi, go):
-        self.gradients = go[0].detach()
-
-    def __call__(self, input_tensor, class_idx):
-        self.model.zero_grad()
-        logits = self.model(input_tensor)          # forward WITH grad
-        logits[0, class_idx].backward()
-
-        weights = self.gradients.mean(dim=(2, 3), keepdim=True)   # [1,C,1,1]
-        cam = F.relu((weights * self.activations).sum(dim=1, keepdim=True))
-        cam = cam.squeeze().cpu().numpy()
-        cam -= cam.min()
-        cam /= cam.max() + 1e-8
-        return cam
-
-    def close(self):
-        self._h1.remove(); self._h2.remove()
-
-
-def overlay_cam(pil_img, cam, size=336, alpha=0.5, colormap="jet"):
-    img = np.array(pil_img.resize((size, size))) / 255.0
-    cam_img = Image.fromarray((cam * 255).astype(np.uint8)).resize((size, size), Image.BILINEAR)
-    heat = cm.get_cmap(colormap)(np.array(cam_img) / 255.0)[..., :3]
-    return np.clip((1 - alpha) * img + alpha * heat, 0, 1)
 
 # PAGE SETUP
 st.set_page_config(
@@ -61,43 +15,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
-
-# COOKIE MANAGER AND DATABASE CONNECTION
-cookie_manager = stx.CookieManager()
-conn = stx.connections.SQLConnection if False else st.connection("history_db", type=SQLConnection)
-
-# Memory containers for current prediciton and user_id
-if "analysis_results" not in st.session_state:
-    st.session_state.analysis_results = None
-if "gradcam_overlay" not in st.session_state:
-    st.session_state.gradcam_overlay = None
-if "last_uploaded_file" not in st.session_state:
-    st.session_state.last_uploaded_file = None
-if "user_id" not in st.session_state:
-    st.session_state.user_id = None
-if "chosen_index" not in st.session_state:
-    st.session_state.chosen_index = 0
-if "show_gradcam_state" not in st.session_state:
-    st.session_state.show_gradcam_state = False
-
-# get cookies
-cookie_user_id = cookie_manager.get(cookie="plant_detector_user_id")
-
-if cookie_user_id:
-    st.session_state.user_id = cookie_user_id
-else:
-    if st.session_state.user_id is None:
-        time.sleep(0.2) 
-        cookie_user_id = cookie_manager.get(cookie="plant_detector_user_id")
-        
-        if cookie_user_id:
-            st.session_state.user_id = cookie_user_id
-            st.rerun()
-        else:
-            new_uid = str(uuid.uuid4())
-            st.session_state.user_id = new_uid
-            cookie_manager.set(cookie="plant_detector_user_id", val=new_uid, max_age=365 * 24 * 3600)
-            st.rerun()
 
 #CS SYLES
 st.markdown("""
@@ -186,7 +103,12 @@ st.markdown("""
         display: flex;
         align-items: center;
         gap: 1rem;
-        padding: 0.2rem 0;
+        padding: 0.6rem 0;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.9);
+    }
+    
+    .top3-row:last-child {
+        border-bottom: none
     }
     
     .top3-rank {
@@ -255,15 +177,6 @@ st.markdown("""
         box-shadow: 0 4px 20px rgba(82, 194, 122, 0.35);
         transform: translateY(-1px);
     }
-
-    /* Styl domyślny dla przycisków-kafelków (nadpisywany dynamicznie przez st.html) */
-    div[data-testid="stHorizontalBlock"] div.stButton > button {
-        color: #e8f5ee !important;
-        border: 1px solid rgba(255, 255, 255, 0.12) !important;
-        padding: 0.6rem 1rem !important;
-        border-radius: 8px !important;
-        text-align: left !important;
-    }
     
     .sidebar-info {
         font-size: 0.85rem;
@@ -289,7 +202,7 @@ st.markdown("""
     }
     
     .plant-emoji {
-        font-size: 2.5rem;
+        font-size: 2,5rem;
         display: block;
         margin-bottom: 0.3rem;
     }
@@ -316,35 +229,8 @@ st.markdown("""
         font-size: 0.82rem;
         padding: 1rem 0;
     }
-            
-    .history-tile {
-        background: rgba(255, 255, 255, 0.05);
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        border-radius: 8px;
-        padding: 0.4rem 0.6rem;
-        margin-bottom: 0.5rem;
-    }
-    .history-plant {
-        font-size: 0.85rem;
-        font-weight: 600;
-        color: #AEE8CB;
-    }
-    .history-date {
-        font-size: 0.7rem;
-        color: #7a9e8a;
-    }
-    .history-diagnosis {
-        font-size: 0.8rem;
-        color: #e8f5ee;
-        margin-top: 0.1rem;
-    }
-    .history-confidence {
-        font-size: 0.8rem;
-        font-weight: 600;
-        color: #52c27a;
-    }
-</style>
-""", unsafe_allow_html=True)
+    </style>
+    """, unsafe_allow_html=True)
 
 # MODEL LOADING
 @st.cache_resource
@@ -384,7 +270,7 @@ def run_prediction(pil_image, top_k=3):
     indices = topk_indices.squeeze().tolist()
     if not isinstance(probs, list):
         probs, indices = [probs], [indices]
-    return [(class_mapping[str(idx)], p, idx) for idx, p in zip(indices, probs)]
+    return [(class_mapping[str(idx)], p) for idx, p in zip(indices, probs)]
 
 def parse_class_name(raw_name):
     """
@@ -435,48 +321,6 @@ def parse_class_name(raw_name):
     result.update({"is_healthy": is_healthy, "short": short})
     return result
 
-def save_to_history(parsed_result, confidence, pil_image):
-    """Zapisuje zdjęcie w uploads/<user_id>/ oraz rekord do bazy danych SQLite"""
-    current_user = st.session_state.get("user_id")
-    if not current_user:
-        return
-
-    #Creating user's directory
-    user_folder = os.path.join("uploads", current_user)
-    if not os.path.exists(user_folder):
-        os.makedirs(user_folder)
-
-    #Unique name of the pic
-    file_name = f"pred_{int(time.time())}.jpg"
-    full_image_path = os.path.join(user_folder, file_name)
-
-    #Save in the directory
-    try:
-        pil_image.save(full_image_path, "JPEG")
-    except Exception as img_err:
-        full_image_path = None
-
-    raw_query = """
-        INSERT INTO prediction_history (user_id, plant_name, condition_name, confidence, is_healthy, image_path)
-        VALUES (:user_id, :plant, :condition, :confidence, :is_healthy, :image_path);
-    """
-    
-    safe_query = text(raw_query)
-
-    with conn.session as session:
-        session.execute(
-            safe_query,
-            {
-                "user_id": current_user,
-                "plant": parsed_result["plant"],
-                "condition": parsed_result["condition"],
-                "confidence": float(confidence),
-                "is_healthy": bool(parsed_result["is_healthy"]),
-                "image_path": full_image_path
-            }
-        )
-        session.commit()
-
 #SIDEBAR
 with st.sidebar:
     st.markdown('<span class="plant-emoji">🌿</span>', unsafe_allow_html=True)
@@ -500,77 +344,15 @@ with st.sidebar:
     st.markdown(plants_html, unsafe_allow_html=True)
 
     st.markdown('<hr class="sidebar-divider">', unsafe_allow_html=True)
+    # Status modelu
     if MODEL_READY:
         st.success("✅ Model successfully loaded")
     else:
         st.warning("⚠️ Demo Mode\n\nModel is not connected - all results are simulated")
 
-    # Sidebar controls
-    st.sidebar.title("Settings")
-    show_top3 = st.sidebar.toggle("Show top-3 confidence chart", value=True)
-    has_results = st.session_state.get("analysis_results") is not None
-    
-    show_gradcam = st.sidebar.toggle(
-        "Show Grad-CAM heatmap", 
-        value=st.session_state.show_gradcam_state,
-        key="gradcam_toggle_widget",
-        disabled=not has_results,
-        help="Grad-CAM is only available after the analysis. Upload the photo and click the 'Analyze' button." if not has_results else ""
-    )
-    st.session_state.show_gradcam_state = show_gradcam
-
-    st.markdown('<hr class="sidebar-divider">', unsafe_allow_html=True)
-    st.markdown('<div class="sidebar-label">📜 Your analysis history </div>', unsafe_allow_html=True)    
-    with st.expander("Show last 5 analyses"):
-        current_user = st.session_state.get("user_id")
-        if current_user:
-            try:
-                history_df = conn.query(
-                    f'SELECT "timestamp", plant_name, condition_name, confidence, image_path FROM prediction_history WHERE user_id = :uid ORDER BY "timestamp" DESC LIMIT 5;',
-                    params={"uid": current_user},
-                    ttl=0
-                )
-                
-                if history_df is not None and not history_df.empty:
-                    for _, row in history_df.iterrows():
-                        raw_time = str(row['timestamp'])
-                        short_date = raw_time[:10] if len(raw_time) >= 16 else raw_time
-                        
-                        st.markdown('<div class="history-tile">', unsafe_allow_html=True)
-                        
-                        col_img, col_txt = st.columns([1, 3], gap="small")
-                        
-                        with col_img:
-                            if row['image_path'] and os.path.exists(row['image_path']):
-                                try:
-                                    img_thumb = Image.open(row['image_path'])
-                                    st.image(img_thumb, use_container_width=True)
-                                except:
-                                    st.text("🖼️") 
-                            else:
-                                st.text("🍃") 
-                                
-                        with col_txt:
-                            st.markdown(
-                                f'<div class="history-plant">{row["plant_name"] or "Nieznana"} - '
-                                f'<span class="history-date">{short_date}</span></div>', 
-                                unsafe_allow_html=True
-                            )
-
-                            conf_pct = float(row['confidence']) * 100
-                            st.markdown(
-                                f'<div class="history-diagnosis">{row["condition_name"]} - '
-                                f'<span class="history-confidence">{conf_pct:.1f}%</span></div>', 
-                                unsafe_allow_html=True
-                            )
-                            
-                        st.markdown('</div>', unsafe_allow_html=True)
-                else:
-                    st.caption("Brak wcześniejszych analiz.")
-            except Exception as e:
-                st.caption(f"Nie udało się pobrać historii: {e}")
-        else:
-            st.caption("Inicjalizacja profilu użytkownika...")
+# Sidebar controls
+st.sidebar.title("Settings")
+show_top3 = st.sidebar.toggle("Show top-3 confidence chart", value=True)
 
 # HEADER
 st.markdown('<h1 class="main-title">🌿 Plant Disease<br>Detector</h1>', unsafe_allow_html=True)
@@ -585,24 +367,6 @@ st.markdown('<div class="main-divider"></div>', unsafe_allow_html=True)
 # MAIN SECTION
 col_upload, col_result = st.columns([1, 1], gap="large")
 
-#Dynamic grad-CAM loading for chosen diagnosis
-if uploaded_file := st.session_state.get("last_uploaded_file"):
-    if st.session_state.get("analysis_results") is not None and st.session_state.show_gradcam_state:
-        results = st.session_state.analysis_results
-        current_idx = st.session_state.chosen_index
-        _, _, top_idx = results[current_idx]
-        
-        pil_image_now = Image.open(uploaded_file).convert("RGB")
-        input_tensor = transforms_val(pil_image_now).unsqueeze(0)
-        cam_extractor = GradCAM(model, model.residual_block14)
-        try:
-            cam = cam_extractor(input_tensor.clone(), class_idx=top_idx)
-            st.session_state.gradcam_overlay = overlay_cam(pil_image_now, cam, alpha=0.5)
-        except Exception:
-            st.session_state.gradcam_overlay = None
-        finally:
-            cam_extractor.close()
-
 with col_upload:
     st.markdown("### 📸 Upload leaf photo")
     st.markdown('<div class="color:#a8c9b5; font-size:0.85rem; margin-bottom:1rem;">Supported file formats: JPG, JPEG, PNG · Max. 10 MB</div>', unsafe_allow_html=True)
@@ -613,19 +377,10 @@ with col_upload:
         help="To ensure the best results the photo should contain one singular leaf on a uniform background."
     )
 
-    if uploaded_file != st.session_state.last_uploaded_file:
-        st.session_state.analysis_results = None
-        st.session_state.gradcam_overlay = None
-        st.session_state.last_uploaded_file = uploaded_file
-        st.session_state.chosen_index = 0
-        st.session_state.show_gradcam_state = False
-
     if uploaded_file is not None:
         pil_image = Image.open(uploaded_file).convert("RGB")
-        if st.session_state.show_gradcam_state and st.session_state.gradcam_overlay is not None:
-            st.image(st.session_state.gradcam_overlay, caption="Uploaded photo with Grad-CAM heatmap", use_container_width=True)
-        else:
-            st.image(pil_image, caption="Uploaded photo", use_container_width=True)
+        st.image(pil_image, caption="Uploaded photo", use_container_width=True)
+
         analyze_btn = st.button("Analyze photo", disabled=not MODEL_READY)
     else:
         st.info(" Upload photo to start the analysis.")
@@ -633,31 +388,9 @@ with col_upload:
 
 
 # ANALYSIS AND RESULTS SECTION
+
 with col_result:
     st.markdown("### 📋 Diagnosis results")
-
-    if analyze_btn and uploaded_file is not None:
-        with st.spinner("Analyzing..."):
-            progress = st.progress(0)
-            for i in range(100):
-                progress.progress(i + 1)
-            progress.empty()
-
-            results = run_prediction(pil_image, top_k=3)
-            st.session_state.analysis_results = results
-            st.session_state.chosen_index = 0
-            st.session_state.show_gradcam_state = False
-
-            top_class, top_conf, top_idx = results[0]
-
-            #Save as history
-            parsed_initial = parse_class_name(top_class)
-            try:
-                save_to_history(parsed_initial, top_conf, pil_image)
-            except Exception as db_err:
-                st.sidebar.error(f"Database error: {db_err}")
-
-            st.rerun()
 
     if uploaded_file is None:
         st.markdown("""
@@ -666,13 +399,18 @@ with col_result:
         </div>
         """, unsafe_allow_html=True)
 
-    elif st.session_state.get("analysis_results") is not None:
-        results = st.session_state.analysis_results
-        
-        current_idx = st.session_state.chosen_index
-        top_class, top_conf, _ = results[current_idx]
-        
+    elif analyze_btn:
+        with st.spinner("Analyzing..."):
+            progress = st.progress(0)
+            for i in range(100):
+                progress.progress(i + 1)
+            progress.empty()
+            top_k = 3 if show_top3 else 1
+            results = run_prediction(pil_image, top_k=top_k)
+
+        top_class, top_conf  = results[0]
         parsed = parse_class_name(top_class)
+
         is_healthy = parsed["is_healthy"]
         card_style = "" if is_healthy else ("danger" if top_conf > 0.7 else "warning")
         icon = "✅" if is_healthy else "🔬"
@@ -692,55 +430,25 @@ with col_result:
         """, unsafe_allow_html=True)
 
         if parsed["full_desc"] != parsed["short"] and len(parsed["full_desc"]) > 60:
-            with st.expander("Check for more information"):
-                ref_image_path = os.path.join("references", f"{top_class}/1.png")
-                ref_image_path2 = os.path.join("references", f"{top_class}/2.png")
-
-                if os.path.exists(ref_image_path):
-                    left_col, right_col = st.columns(2)
-                    with left_col:
-                        try:
-                            ref_img = Image.open(ref_image_path)
-                            ref_img_resized = ref_img.resize((300, 300))
-                            st.image(ref_img_resized, use_container_width=True)
-                        except Exception:
-                            st.caption("Something went wrong when loading reference photo.")
-                    
-                    with right_col:
-                        if os.path.exists(ref_image_path2):
-                            try:
-                                ref_img = Image.open(ref_image_path2)
-                                ref_img_resized = ref_img.resize((300, 300))
-                                st.image(ref_img_resized, use_container_width=True)
-                            except Exception:
-                                st.caption("Something went wrong when loading reference photo.")
-                else:
-                    st.info("Sorry, we don't have any reference photo for that.")   
-
-                if parsed["full_desc"] != parsed["short"]:
-                    st.markdown("**Pełny opis laboratoryjny klasy:**")
-                    st.caption(parsed["full_desc"])
+            with st.expander("Full class description"):
+                st.caption(parsed["full_desc"])
 
         # Top-3
         if show_top3 and len(results) > 1:
-            st.markdown('<div style="margin-top:1rem;margin-bottom:0.4rem;font-size:0.8rem;color:#a8c9b5;text-transform:uppercase;letter-spacing:0.08em;">Pozostałe możliwe diagnozy (kliknij, aby zamienić)</div>', unsafe_allow_html=True)
-            
-            with st.container():
-                for index, (cls_name, prob, _) in enumerate(results):
-                    if index == current_idx:
-                        continue
-                    
-                    display_name = cls_name.replace("_", " ")
-                    button_label = f"#{index + 1} | {display_name} — {prob * 100:.1f}%"
-                    
-                    #Progress bar
-                    pct = prob * 100
-                    
-                    if st.button(button_label, key=f"switch_tile_{index}"):
-                        st.session_state.chosen_index = index
-                        #Grad-CAM turns off when diagnosis is being changed
-                        st.session_state.show_gradcam_state = False
-                        st.rerun()
+            st.markdown('<div style="margin-top:1rem;margin-bottom:0.4rem;font-size:0.8rem;color:#a8c9b5;text-transform:uppercase;letter-spacing:0.08em;">Inne możliwe diagnozy</div>', unsafe_allow_html=True)
+            rows_html = ""
+            for rank, (cls_name, prob) in enumerate(results[1:], start=2):
+                rows_html += f"""
+                <div class="top3-row">
+                    <div class="top3-rank">#{rank}</div>
+                    <div class="top3-name">{cls_name.replace("_", " ")}</div>
+                    <div class="top3-bar-bg">
+                        <div class="top3-bar-fill" style="width:{prob * 100:.1f}%"></div>
+                    </div>
+                    <div class="top3-pct">{prob * 100:.1f}%</div>
+                </div>"""
+            st.markdown(f'<div class="info-box" style="padding:0.8rem 1.2rem;">{rows_html}</div>',
+                        unsafe_allow_html=True)
 
     else:
         st.markdown("""
@@ -757,3 +465,4 @@ st.markdown("""
     Model distinguishes [] diseases and healthy plants
 </div>
 """, unsafe_allow_html=True)
+
