@@ -10,5 +10,4 @@ services:
     volumes:
       - ./app.py:/app/app.py
       - ./model.py:/app/model.py
-      - .:/app
     restart: unless-stopped
